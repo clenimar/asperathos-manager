@@ -30,6 +30,7 @@ def create_job(app_id, cmd, img, init_size, env_vars,
                scone_version="1",
                isgx="dev-isgx",
                devisgx="/dev/isgx",
+               attach_docker=False
                ):
 
     kube.config.load_kube_config(api.k8s_conf_path)
@@ -59,6 +60,40 @@ def create_job(app_id, cmd, img, init_size, env_vars,
         )
     )
 
+    # expose SGX drivers inside of containers
+    volumes = [devisgx]
+    volume_mounts = [isgx]
+
+    # specify privileged securityContext so the container
+    # can access the SGX driver in the host
+    sc_priv = kube.client.V1SecurityContext(
+            privileged=True
+        )
+
+    # NOTE(clenimar): some workloads require a Docker daemon in order
+    # to run properly. if `attach_docker` is set to True, expose the
+    # Docker daemon in the host. the default is False.
+    # FIXME: we should not expose any host's specifics unless strictly
+    # necessary. find a way to run a Docker daemon safely.
+    if attach_docker:
+        docker_sock_mount = kube.client.V1VolumeMount(
+            mount_path="/var/run/docker.sock",
+            name="docker-sock"
+        )
+        docker_sock_volume = kube.client.V1Volume(
+            name="docker-sock",
+            host_path=kube.client.V1HostPathVolumeSource(
+                path="/var/run/docker.sock"
+            )
+        )
+
+        sc_fsGroup = kube.client.V1PodSecurityContext(
+            fs_group=412
+        )
+
+        volumes.append(docker_sock_volume)
+        volume_mounts.append(docker_sock_mount)
+
     container_spec = kube.client.V1Container(
         command=cmd,
         env=envs,
@@ -66,14 +101,19 @@ def create_job(app_id, cmd, img, init_size, env_vars,
         image_pull_policy="Always",
         name=app_id,
         tty=True,
-        volume_mounts=[isgx],
-        security_context=kube.client.V1SecurityContext(
-            privileged=True
-        ))
+        volume_mounts=volume_mounts,
+        security_context=sc_priv)
+    
     pod_spec = kube.client.V1PodSpec(
         containers=[container_spec],
         restart_policy="OnFailure",
-        volumes=[devisgx])
+        volumes=volumes)
+
+    # if exposing the Docker daemon inside, add the Pod
+    # to the Docker filesystem group (so it can work properly)
+    if attach_docker:
+        pod_spec.security_context = sc_fsGroup
+
     pod = kube.client.V1PodTemplateSpec(
         metadata=obj_meta,
         spec=pod_spec)
@@ -90,7 +130,6 @@ def create_job(app_id, cmd, img, init_size, env_vars,
     batch_v1.create_namespaced_job("default", job)
 
     return job
-
 
 
 def provision_redis_or_die(app_id, namespace="default", redis_port=6379, timeout=60):

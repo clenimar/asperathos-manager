@@ -72,9 +72,20 @@ class KubeJobsExecutor(GenericApplicationExecutor):
 
             print "Creating Job"
 
+            # NOTE(clenimar): some workloads require a Docker daemon in order
+            # to run properly. if `attach_docker` is set to True, expose the
+            # Docker daemon in the host. the default is False.
+            # FIXME: we should not expose any host's specifics unless strictly
+            # necessary. find a way to run a Docker daemon safely.
+            attach_docker = data.get("attach_docker", False)
+
             k8s.create_job(self.app_id,
-                           data['cmd'], data['img'],
-                           data['init_size'], data['env_vars'], config_id=data["config_id"])
+                           data['cmd'],
+                           data['img'],
+                           data['init_size'],
+                           data['env_vars'],
+                           config_id=data["config_id"],
+                           attach_docker=attach_docker)
 
             starting_time = datetime.datetime.now().\
                 strftime('%Y-%m-%dT%H:%M:%S.%fGMT')
